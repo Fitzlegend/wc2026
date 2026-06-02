@@ -11,14 +11,21 @@ const cors = {
 
 // Verify the Netlify Identity JWT and return user info
 function getUser(req, context) {
-  // Netlify automatically populates context.clientContext when a valid
-  // Identity JWT is sent as Authorization: Bearer <token>
+  console.log("[auth] clientContext keys:", Object.keys(context?.clientContext || {}));
+  console.log("[auth] identity url:", context?.clientContext?.identity?.url);
+  console.log("[auth] user present:", !!context?.clientContext?.user);
+  
   const user = context?.clientContext?.user;
-  if (user) return user;
+  if (user) {
+    console.log("[auth] user email:", user.email, "sub:", user.sub);
+    return user;
+  }
 
-  // Fallback: check if identity context exists at all
-  const identity = context?.clientContext?.identity;
-  if (!identity) return null;
+  // If no user in context, check the Authorization header directly
+  // This can happen with certain Netlify plan tiers
+  const authHeader = req.headers.get("Authorization") || req.headers.get("authorization");
+  console.log("[auth] Authorization header present:", !!authHeader);
+  
   return null;
 }
 

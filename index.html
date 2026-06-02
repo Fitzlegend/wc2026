@@ -338,14 +338,23 @@ async function apiGet(){
   return r.ok?r.json():null;
 }
 async function getFreshToken(){
-  // Always refresh before use — Netlify JWTs expire after 1 hour
-  if(!netlifyUser) throw new Error("Not logged in");
+  if(!netlifyUser) throw new Error("Not logged in — please sign in first");
+  
+  // Force a token refresh
   try {
-    await netlifyIdentity.refresh();
-  } catch(e) { /* ignore, use existing */ }
-  const token = netlifyIdentity.currentUser()?.token?.access_token
-             || netlifyUser?.token?.access_token;
-  if(!token) throw new Error("Not authenticated — please log in again");
+    const refreshed = await netlifyIdentity.refresh();
+    console.log("[auth] token refreshed", refreshed);
+  } catch(e) {
+    console.warn("[auth] refresh failed, using existing token", e);
+  }
+
+  const user = netlifyIdentity.currentUser();
+  console.log("[auth] currentUser:", user?.email, "token keys:", user?.token ? Object.keys(user.token) : "none");
+  
+  const token = user?.token?.access_token || netlifyUser?.token?.access_token;
+  console.log("[auth] token present:", !!token, "first 20 chars:", token?.slice(0,20));
+  
+  if(!token) throw new Error("No auth token found — please sign out and sign in again");
   return token;
 }
 
