@@ -334,7 +334,7 @@ function shuffle(a){const b=[...a];for(let i=b.length-1;i>0;i--){const j=Math.fl
 //  API
 // ═══════════════════════════════════════════════════════
 async function apiGet(){
-  const r=await fetch("/api/game");
+  const r=await fetch("/.netlify/functions/game");
   return r.ok?r.json():null;
 }
 async function getFreshToken(){
@@ -360,7 +360,7 @@ async function getFreshToken(){
 
 async function apiPost(action,payload){
   const token = await getFreshToken();
-  const r=await fetch("/api/game",{
+  const r=await fetch("/.netlify/functions/game",{
     method:"POST",
     headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
     body:JSON.stringify({action,payload})
