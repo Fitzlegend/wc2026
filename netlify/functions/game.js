@@ -1,59 +1,66 @@
 // netlify/functions/game.js
-// Handles all game state via Netlify Blobs
-// GET  /api/game        → read game state
-// POST /api/game        → update game state (body: {action, payload})
-// Requires Netlify Identity JWT for write operations
-
 import { getStore } from "@netlify/blobs";
 
 const BLOB_KEY = "wc2026-game";
 
-export default async function handler(req, context) {
-  const store = getStore("game");
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Content-Type": "application/json",
-  };
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Content-Type": "application/json",
+};
 
+// Verify the Netlify Identity JWT and return user info
+function getUser(req, context) {
+  // Netlify automatically populates context.clientContext when a valid
+  // Identity JWT is sent as Authorization: Bearer <token>
+  const user = context?.clientContext?.user;
+  if (user) return user;
+
+  // Fallback: check if identity context exists at all
+  const identity = context?.clientContext?.identity;
+  if (!identity) return null;
+  return null;
+}
+
+export default async function handler(req, context) {
   // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers });
+    return new Response(null, { status: 204, headers: cors });
   }
 
-  // ── GET: read current game state ─────────────────────
+  const store = getStore("game");
+
+  // ── GET ───────────────────────────────────────────────
   if (req.method === "GET") {
     try {
-      const data = await store.get(BLOB_KEY, { type: "json" });
-      return new Response(JSON.stringify(data || null), { status: 200, headers });
-    } catch {
-      return new Response(JSON.stringify(null), { status: 200, headers });
+      const data = await store.get(BLOB_KEY, { type: "json" }).catch(() => null);
+      return new Response(JSON.stringify(data || null), { status: 200, headers: cors });
+    } catch(e) {
+      return new Response(JSON.stringify(null), { status: 200, headers: cors });
     }
   }
 
-  // ── POST: mutate game state ───────────────────────────
+  // ── POST ──────────────────────────────────────────────
   if (req.method === "POST") {
-    // Verify Netlify Identity JWT
-    const user = context.clientContext?.user;
+    const user = getUser(req, context);
     if (!user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
+      return new Response(
+        JSON.stringify({ error: "Unauthorized — Bearer token required" }),
+        { status: 401, headers: cors }
+      );
     }
 
-    const body = await req.json();
+    let body;
+    try { body = await req.json(); }
+    catch { return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400, headers: cors }); }
+
     const { action, payload } = body;
-
-    let game;
-    try {
-      game = await store.get(BLOB_KEY, { type: "json" });
-    } catch {
-      game = null;
-    }
+    let game = await store.get(BLOB_KEY, { type: "json" }).catch(() => null);
 
     switch (action) {
 
-      // Admin creates the game
       case "CREATE_GAME": {
-        if (game) return new Response(JSON.stringify({ error: "Game already exists" }), { status: 409, headers });
+        if (game) return new Response(JSON.stringify({ error: "Game already exists" }), { status: 409, headers: cors });
         const newGame = {
           ...payload,
           adminEmail: user.email,
@@ -61,80 +68,76 @@ export default async function handler(req, context) {
           createdAt: new Date().toISOString(),
         };
         await store.setJSON(BLOB_KEY, newGame);
-        return new Response(JSON.stringify(newGame), { status: 200, headers });
+        return new Response(JSON.stringify(newGame), { status: 200, headers: cors });
       }
 
-      // Player claims their slot
       case "CLAIM_SLOT": {
-        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers });
-        const { playerName } = payload;
-        const slot = game.players.find(p => p.name === playerName);
-        if (!slot) return new Response(JSON.stringify({ error: "Player not found" }), { status: 404, headers });
-        if (slot.email && slot.email !== user.email) return new Response(JSON.stringify({ error: "Slot taken" }), { status: 409, headers });
-        slot.email = user.email;
+        if (!game) return new Response(JSON.stringify({ error: "No game found" }), { status: 404, headers: cors });
+        const slot = game.players.find(p => p.name === payload.playerName);
+        if (!slot) return new Response(JSON.stringify({ error: "Player not found" }), { status: 404, headers: cors });
+        if (slot.sub && slot.sub !== user.sub) return new Response(JSON.stringify({ error: "Slot already taken" }), { status: 409, headers: cors });
         slot.sub   = user.sub;
+        slot.email = user.email;
         slot.avatar = user.user_metadata?.avatar_url || null;
         await store.setJSON(BLOB_KEY, game);
-        return new Response(JSON.stringify(game), { status: 200, headers });
+        return new Response(JSON.stringify(game), { status: 200, headers: cors });
       }
 
-      // Player confirms a spin pick
       case "CONFIRM_PICK": {
-        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers });
-        const { team, phaseIdx, poolKey } = payload;
-        // Verify it's this player's turn
+        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers: cors });
         const currentDrawer = game.drawOrder[game.drawPlayerIdx];
         const mySlot = game.players.find(p => p.sub === user.sub);
         if (!mySlot || mySlot.name !== currentDrawer) {
-          return new Response(JSON.stringify({ error: "Not your turn" }), { status: 403, headers });
+          return new Response(JSON.stringify({ error: "Not your turn" }), { status: 403, headers: cors });
         }
-        // Apply pick
+        const { team, phaseIdx, poolKey } = payload;
         mySlot.teams[phaseIdx] = team;
-        game.pools[poolKey] = game.pools[poolKey].filter(t => t.name !== team.name);
-        let nextPhase = game.drawPhase + 1;
-        let nextIdx   = game.drawPlayerIdx;
-        if (nextPhase >= 4) { nextPhase = 0; nextIdx++; mySlot.drawDone = true; }
-        game.drawPhase      = nextPhase;
-        game.drawPlayerIdx  = nextIdx;
+        game.pools[poolKey] = (game.pools[poolKey] || []).filter(t => t.name !== team.name);
+        const nextPhase = game.drawPhase + 1;
+        if (nextPhase >= 4) {
+          game.drawPhase = 0;
+          game.drawPlayerIdx++;
+          mySlot.drawDone = true;
+        } else {
+          game.drawPhase = nextPhase;
+        }
         await store.setJSON(BLOB_KEY, game);
-        return new Response(JSON.stringify(game), { status: 200, headers });
+        return new Response(JSON.stringify(game), { status: 200, headers: cors });
       }
 
-      // Admin toggles a team's elimination
       case "TOGGLE_ELIM": {
-        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers });
-        if (user.sub !== game.adminSub) return new Response(JSON.stringify({ error: "Admin only" }), { status: 403, headers });
+        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers: cors });
+        if (user.sub !== game.adminSub) return new Response(JSON.stringify({ error: "Admin only" }), { status: 403, headers: cors });
         const { teamName } = payload;
-        const idx = (game.eliminated || []).indexOf(teamName);
+        game.eliminated = game.eliminated || [];
+        const idx = game.eliminated.indexOf(teamName);
         if (idx >= 0) game.eliminated.splice(idx, 1);
-        else { game.eliminated = game.eliminated || []; game.eliminated.push(teamName); }
+        else game.eliminated.push(teamName);
         await store.setJSON(BLOB_KEY, game);
-        return new Response(JSON.stringify(game), { status: 200, headers });
+        return new Response(JSON.stringify(game), { status: 200, headers: cors });
       }
 
-      // Store live bracket data (any logged-in user can refresh)
       case "UPDATE_BRACKET": {
-        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers });
+        if (!game) return new Response(JSON.stringify({ error: "No game" }), { status: 404, headers: cors });
         game.bracketData  = payload.bracketData;
         game.eliminated   = payload.eliminated || game.eliminated;
         game.lastUpdated  = new Date().toISOString();
         await store.setJSON(BLOB_KEY, game);
-        return new Response(JSON.stringify(game), { status: 200, headers });
+        return new Response(JSON.stringify(game), { status: 200, headers: cors });
       }
 
-      // Admin resets the game
       case "RESET_GAME": {
-        if (user.sub !== game?.adminSub) return new Response(JSON.stringify({ error: "Admin only" }), { status: 403, headers });
+        if (!game || user.sub !== game.adminSub) return new Response(JSON.stringify({ error: "Admin only" }), { status: 403, headers: cors });
         await store.delete(BLOB_KEY);
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors });
       }
 
       default:
-        return new Response(JSON.stringify({ error: "Unknown action" }), { status: 400, headers });
+        return new Response(JSON.stringify({ error: "Unknown action: " + action }), { status: 400, headers: cors });
     }
   }
 
-  return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers });
+  return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: cors });
 }
 
 export const config = { path: "/api/game" };

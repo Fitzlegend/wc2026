@@ -325,9 +325,20 @@ async function apiGet(){
   const r=await fetch("/api/game");
   return r.ok?r.json():null;
 }
+async function getFreshToken(){
+  // Always refresh before use — Netlify JWTs expire after 1 hour
+  if(!netlifyUser) throw new Error("Not logged in");
+  try {
+    await netlifyIdentity.refresh();
+  } catch(e) { /* ignore, use existing */ }
+  const token = netlifyIdentity.currentUser()?.token?.access_token
+             || netlifyUser?.token?.access_token;
+  if(!token) throw new Error("Not authenticated — please log in again");
+  return token;
+}
+
 async function apiPost(action,payload){
-  const token=netlifyUser?.token?.access_token;
-  if(!token) throw new Error("Not authenticated");
+  const token = await getFreshToken();
   const r=await fetch("/api/game",{
     method:"POST",
     headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
