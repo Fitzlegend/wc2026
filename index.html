@@ -365,8 +365,12 @@ async function apiPost(action,payload){
     headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
     body:JSON.stringify({action,payload})
   });
-  if(!r.ok){const e=await r.json();throw new Error(e.error||"Server error")}
-  return r.json();
+  // Safely parse response — never crash on empty body
+  let data;
+  try { data = await r.json(); } 
+  catch(e) { throw new Error(`Server error (${r.status}) — check Netlify function logs`); }
+  if(!r.ok) throw new Error(data?.error || `Error ${r.status}`);
+  return data;
 }
 
 // Poll for state changes every 5s while app is open
